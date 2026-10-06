@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Ultimate Pro Tetris</title>
+    <style>
+        body {
+            background: #111;
+            color: #fff;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            user-select: none;
+        }
+        h1 { margin: 5px 0; color: #0dc2ff; text-shadow: 0 0 10px #0dc2ff; font-size: 24px; }
+        .game-container { display: flex; gap: 15px; background: #222; padding: 15px; border: 4px solid #444; border-radius: 10px; }
+        canvas { background: #000; border: 2px solid #fff; display: block; }
+        .sidebar { display: flex; flex-direction: column; justify-content: space-between; width: 110px; gap: 10px; }
+        .info-box { background: #333; border: 2px solid #555; padding: 5px; text-align: center; border-radius: 5px; }
+        .info-box h3 { margin: 0 0 3px 0; font-size: 11px; color: #aaa; }
+        .info-box div { font-size: 16px; font-weight: bold; }
+        #tspin-alert { color: #ff33ff; font-weight: bold; min-height: 24px; font-size: 16px; text-shadow: 0 0 5px #ff33ff; text-align: center; }
+        
+        .mobile-controls { display: flex; flex-direction: column; width: 100%; max-width: 340px; margin-top: 15px; gap: 8px; }
+        .btn-row { display: flex; justify-content: center; gap: 8px; width: 100%; }
+        .btn {
+            flex: 1; height: 50px; background: #444; border: 2px solid #666; color: #fff;
+            border-radius: 8px; font-size: 16px; font-weight: bold; display: flex;
+            align-items: center; justify-content: center; cursor: pointer;
+        }
+        .btn:active { background: #666; transform: scale(0.95); }
+        .btn-hold { background: #553355; border-color: #774477; }
+        .btn-drop { background: #554433; border-color: #776644; }
+        .status-bar { font-size: 11px; color: #888; margin-top: 8px; text-align: center; }
+    </style>
+</head>
+<body>
+
+    <h1>PRO TETRIS: EVO</h1>
+    <div id="tspin-alert"></div>
+    
+    <div class="game-container">
+        <canvas id="tetris" width="240" height="480"></canvas>
+        
+        <div class="sidebar">
+            <div class="info-box">
+                <h3>HOLD</h3>
+                <canvas id="hold" width="80" height="80"></canvas>
+            </div>
+            <div class="info-box">
+                <h3>NEXT</h3>
+                <canvas id="next" width="80" height="80"></canvas>
+            </div>
+            <div class="info-box">
+                <h3>SCORE</h3>
+                <div id="score">0</div>
+            </div>
+            <div class="info-box">
+                <h3>LEVEL</h3>
+                <div id="level">0</div>
+            </div>
+            <div class="info-box">
+                <h3>LINES</h3>
+                <div id="lines">0</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="status-bar" id="gamepad-status">🎮 Нажмите кнопку на джойстике для подключения</div>
+
+    <div class="mobile-controls">
+        <div class="btn-row">
+            <button class="btn btn-hold" onclick="handleInput('HOLD')">HOLD</button>
+            <button class="btn" onclick="handleInput('ROTATE')">ROTATE</button>
+            <button class="btn btn-drop" onclick="handleInput('DROP')">DROP</button>
+        </div>
+        <div class="btn-row">
+            <button class="btn" onclick="handleInput('LEFT')">◀</button>
+            <button class="btn" onclick="handleInput('DOWN')">▼</button>
+            <button class="btn" onclick="handleInput('RIGHT')">▶</button>
+        </div>
+    </div>
+
+<script>
+const canvas = document.getElementById('tetris');
+const context = canvas.getContext('2d');
+const nextCanvas = document.getElementById('next');
+const nextContext = nextCanvas.getContext('2d');
+const holdCanvas = document.getElementById('hold');
+const holdContext = holdCanvas.getContext('2d');
+
+context.scale(24, 24);
+nextContext.scale(20, 20);
+holdContext.scale(20, 20);
+
+const colors = [
+    null, '#FF0D72', '#0DC2FF', '#0DFF72', '#F538FF', '#FF8E0D', '#FFE138', '#3877FF'
+];
+
+// Фигуры закодированы строками, чтобы избежать повреждения массивов автоматикой
+const SHAPE_STRINGS = {
+    'I': '0000/1111/0000/0000',
+    'L': '002/222/000',
+    'J': '300/333/000',
+    'O': '44/44',
+    'Z': '550/055/000',
+    'S': '066/660/000',
+    'T': '070/777/000'
+};
+
+function parseShape(type) {
+    return SHAPE_STRINGS[type].split('/').map(row => row.split('').map(Number));
+}
+
+const pieces = ['I', 'L', 'J', 'O', 'Z', 'S', 'T'];
+let arena = [];
+for (let i = 0; i < 20; i++) { arena.push(new Array(10).fill(0)); }
+
+let player = { pos: {x: 3, y: 0}, matrix: parseShape('T'), type: 'T', score: 0, lines: 0, level: 0 };
+let nextPieceType = 'I';
+let holdPieceType = null;
+let hasSwappedHold = false;
+let lastActionWasRotate = false;
+
+function getRandomPiece() {
+    return pieces[Math.floor(Math.random() * pieces.length)];
+}
+
+function drawMatrix(matrix, offset, ctx = context) {
+    if (!matrix) return;
+    for (let y = 0; y < matrix.length; y++) {
+        for (let x = 0; x < matrix[y].length; x++) {
+            if (matrix[y][x] !== 0) {
+                ctx.fillStyle = colors[matrix[y][x]];
+                ctx.fillRect(x + offset.x, y + offset.y, 1, 1);
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 0.08;
+                ctx.strokeRect(x + offset.x, y + offset.y, 1, 1);
+            }
+        }
+    }
+}
+
+function draw() {
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    
+    drawMatrix(arena, {x: 0, y: 0});
+    drawMatrix(player.matrix, {x: player.pos.x, y: player.pos.y});
+    
+    nextContext.fillStyle = '#000';
+    nextContext.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
+    drawMatrix(parseShape(nextPieceType), {x: 0.5, y: 0.5}, nextContext);
+
+    holdContext.fillStyle = '#000';
+    holdContext.fillRect(0, 0, holdCanvas.width, holdCanvas.height);
+    if (holdPieceType) {
+        drawMatrix(parseShape(holdPieceType), {x: 0.5, y: 0.5}, holdContext);
+    }
+}
+
+function merge(arena, player) {
+    for (let y = 0; y < player.matrix.length; y++) {
+        for (let x = 0; x < player.matrix[y].length; x++) {
+            if (player.matrix[y][x] !== 0) {
+                let arenaY = y + player.pos.y;
+                let arenaX = x + player.pos.x;
+                if (arenaY >= 0 && arenaY < 20 && arenaX >= 0 && arenaX < 10) {
+                    arena[arenaY][arenaX] = player.matrix[y][x];
+                }
+            }
+        }
+    }
+}
+
+function collide(arena, player) {
+    for (let y = 0; y < player.matrix.length; y++) {
+        for (let x = 0; x < player.matrix[y].length; x++) {
+            if (player.matrix[y][x] !== 0) {
+                let arenaY = y + player.pos.y;
+                let arenaX = x + player.pos.x;
+                if (arenaX < 0 || arenaX >= 10 || arenaY >= 20) return true;
+                if (arenaY >= 0 && arena[arenaY][arenaX] !== 0) return true;
+            }
+        }
+    }
+    return false;
+}
+
+function checkTSpin() {
+    if (player.type !== 'T' || !lastActionWasRotate) return false;
+    let cx = player.pos.x + 1; 
+    let cy = player.pos.y + 1;
+    let corners = 0;
+    const isFilled = (x, y) => {
+        if (x < 0 || x >= 10 || y >= 20) return true;
+        if (y < 0) return false;
+        return arena[y][x] !== 0;
+    };
+    if (isFilled(cx - 1, cy - 1)) corners++;
+    if (isFilled(cx + 1, cy - 1)) corners++;
+    if (isFilled(cx - 1, cy + 1)) corners++;
+    if (isFilled(cx + 1, cy + 1)) corners++;
+    return corners >= 3;
+}
+
+function arenaSweep() {
+    let clearedLines = 0;
+    let isTSpin = checkTSpin();
+
+    for (let y = 19; y >= 0; y--) {
+        let isFull = true;
+        for (let x = 0; x < 10; x++) {
+            if (arena[y][x] === 0) { isFull = false; break; }
+        }
+        if (isFull) {
+            arena.splice(y, 1);
+            arena.unshift(new Array(10).fill(0));
+            y++;
+            clearedLines++;
+        }
+    }
+
+    if (clearedLines > 0 || isTSpin) {
+        let basePoints = 0;
+        let txt = "";
+        if (isTSpin) {
+            if (clearedLines === 0) { basePoints = 400; txt = "T-SPIN!"; }
+            else if (clearedLines === 1) { basePoints = 800; txt = "T-SPIN SINGLE!"; }
+            else if (clearedLines === 2) { basePoints = 1200; txt = "💥 T-SPIN DOUBLE!"; }
+        } else {
+            if (clearedLines === 1) basePoints = 100;
+            else if (clearedLines === 2) basePoints = 300;
+            else if (clearedLines === 3) basePoints = 500;
+            else if (clearedLines === 4) { basePoints = 800; txt = "🚀 TETRIS!!!"; }
+        }
+        if (txt) {
+            document.getElementById('tspin-alert').innerText = txt;
+            setTimeout(() => { document.getElementById('tspin-alert').innerText = ""; }, 1200);
+        }
+        player.score += basePoints * (player.level + 1);
+        player.lines += clearedLines;
+        player.level = Math.floor(player.lines / 10);
+        updateScoreCounters();
+    }
+}
+
+let dropCounter = 0;
+let lastTime = 0;
+
+function update(time = 0) {
+    const deltaTime = time - lastTime;
+    lastTime = time;
+    dropCounter += deltaTime;
+
+    let currentSpeed = 800 - (player.level * 70);
+    if (currentSpeed < 60) currentSpeed = 60;
+
+    if (dropCounter > currentSpeed) {
+        playerDrop();
+    }
+
+    draw();
+    handleGamepadInput();
+    requestAnimationFrame(update);
+}
+
+function playerDrop() {
+    player.pos.y++;
+    if (collide(arena, player)) {
+        player.pos.y--;
+        merge(arena, player);
+        arenaSweep();
+        playerReset();
+    }
+    dropCounter = 0;
+    lastActionWasRotate = false;
+}
+
+function handleInput(action) {
+if (action === 'LEFT') { player.pos.x--; if (collide(arena, player)) player.pos.x++; lastActionWasRotate = false; }
+if (action === 'RIGHT') { player.pos.x++; if (collide(arena, player)) player.pos.x--; lastActionWasRotate = false; }
+if (action === 'DOWN') { playerDrop(); }
+if (action === 'ROTATE') {
+const oldX = player.pos.x;
+let offset = 1;
+for (let y = 0; y < player.matrix.length; ++y) {
+for (let x = 0; x < y; ++x) {
+let temp = player.matrix[x][y];
+player.matrix[x][y] = player.matrix[y][x];
+player.matrix[y][x] = temp;
+}
+}
+player.matrix.forEach(row => row.reverse());
+while (collide(arena, player)) {
+player.pos.x += offset;
+offset = -(offset + (offset > 0 ? 1 : -1));
+if (offset > player.matrix.length) {
+player.matrix.forEach(row => row.reverse());
+for (let y = 0; y < player.matrix.length; ++y) {
+for (let x = 0; x < y; ++x) {
+let temp = player.matrix[x][y];
+player.matrix[x][y] = player.matrix[y][x];
+player.matrix[y][x] = temp;
+}
+}
+player.pos.x = oldX;
+return;
+}
+}
+lastActionWasRotate = true;
+}
+if (action === 'DROP') {
+while(!collide(arena, player)) { player.pos.y++; }
+player.pos.y--;
+merge(arena, player);
+arenaSweep();
+playerReset();
+lastActionWasRotate = false;
+}
+if (action === 'HOLD') {
+if (hasSwappedHold) return;
+if (holdPieceType === null) {
+holdPieceType = player.type;
+playerReset();
+} else {
+const temp = player.type;
+player.type = holdPieceType;
+player.matrix = parseShape(holdPieceType);
+holdPieceType = temp;
+player.pos.y = 0;
+player.pos.x = 3;
+}
+hasSwappedHold = true;
+}
+}
+function playerReset() {
+player.type = nextPieceType;
+player.matrix = parseShape(nextPieceType);
+player.pos.y = 0;
+player.pos.x = 3;
+nextPieceType = getRandomPiece();
+hasSwappedHold = false;
+if (collide(arena, player)) {
+for (let i = 0; i < 20; i++) { arena[i].fill(0); }
+player.score = 0;
+player.lines = 0;
+player.level = 0;
+holdPieceType = null;
+updateScoreCounters();
+}
+}
+function updateScoreCounters() {
+document.getElementById('score').innerText = player.score;
+document.getElementById('lines').innerText = player.lines;
+document.getElementById('level').innerText = player.level;
+}
+let gamepadIndex = null;
+let buttonStates = {};
+window.addEventListener("gamepadconnected", (e) => {
+gamepadIndex = e.gamepad.index;
+document.getElementById('gamepad-status').innerText = "🎮 Геймпад активен: " + e.gamepad.id.slice(0, 15);
+});
+window.addEventListener("gamepaddisconnected", () => {
+gamepadIndex = null;
+document.getElementById('gamepad-status').innerText = "🎮 Геймпад отключен";
+});
+function handleGamepadInput() {
+if (gamepadIndex === null) return;
+const gp = navigator.getGamepads()[gamepadIndex];
+if (!gp) return;
+const btn = (i) => gp.buttons[i] && gp.buttons[i].pressed;
+const ax = (i) => gp.axes[i] || 0;
+const btns = {
+'ROTATE': btn(0) || btn(3),
+'DROP': btn(1),
+'HOLD': btn(4) || btn(5),
+'LEFT': btn(14) || ax(0) < -0.5,
+'RIGHT': btn(15) || ax(0) > 0.5,
+'DOWN': btn(13) || ax(1) > 0.5
+};
+for (let act in btns) {
+if (btns[act]) {
+if (!buttonStates[act]) {
+handleInput(act);
+buttonStates[act] = true;
+let t = 130;
+if (act === 'LEFT' || act === 'RIGHT') t = 80;
+if (act === 'DOWN') t = 40;
+setTimeout(() => { buttonStates[act] = false; }, t);
+}
+} else {
+if (act !== 'LEFT' && act !== 'RIGHT' && act !== 'DOWN') {
+buttonStates[act] = false;
+} else if (!btns['LEFT'] && !btns['RIGHT'] && !btns['DOWN']) {
+buttonStates[act] = false;
+}
+}
+}
+}
+document.addEventListener('keydown', e => {
+const codes =;
+if (codes.indexOf(e.keyCode) > -1) {
+e.preventDefault();
+}
+if (e.keyCode === 37) handleInput('LEFT');
+if (e.keyCode === 39) handleInput('RIGHT');
+if (e.keyCode === 40) handleInput('DOWN');
+if (e.keyCode === 38) handleInput('ROTATE');
+if (e.keyCode === 32) handleInput('DROP');
+if (e.keyCode === 67) handleInput('HOLD');
+});
+nextPieceType = getRandomPiece();
+playerReset();
+updateScoreCounters();
+update();
+
